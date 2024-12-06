@@ -1,0 +1,150 @@
+# Load required libraries
+library(tidyverse)
+library(caret)
+library(corrplot) 
+library(randomForest)
+library(MASS)
+
+# Set script current directory as working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# Read the dataset
+asteroids <- read.csv("Asteroid_Updated.csv")
+
+# Check the structure of the data
+str(asteroids)
+
+# Variables are:
+# a - semi-major axis(au)
+# e - eccentricity
+# i - Inclination with respect to x-y ecliptic plane(deg)
+# om - Longitude of the ascending node
+# w - argument of perihelion
+# q - perihelion distance(au)
+# ad - aphelion distance(au)
+# per_y - Orbital period(YEARS)
+# H - Absolute Magnitude parameter
+# neo - Near Earth Object / N or Y
+# pha - Physically Hazardous Asteroid - N or Y
+# moid - Earth Minimum orbit Intersection Distance(au)
+# n - Mean motion(deg/d)
+# per - orbital Period(d)
+# ma - Mean anomaly(deg)
+
+# Clean the data
+clean_asteroids <- asteroids %>%
+  select(a, e, i, om, w, q, ad, per_y, H, moid, n, per, ma, pha) %>%
+  na.omit() %>%
+  mutate(pha = as.factor(pha))
+
+
+# Correlation plot
+numeric_data <- clean_asteroids %>% 
+  select_if(is.numeric)
+correlation_matrix <- cor(numeric_data)
+corrplot(correlation_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45)
+
+# Create histograms and density plots
+numeric_data_long <- numeric_data %>%
+  gather(key = "variable", value = "value")
+
+# Histograms
+ggplot(numeric_data_long, aes(x = value)) +
+  geom_histogram(fill = "steelblue", color = "black", bins = 30) +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Histograms of Asteroid Features",
+       x = "Value",
+       y = "Count")
+
+# Density plots
+ggplot(numeric_data_long, aes(x = value)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Density Plots of Asteroid Features",
+       x = "Value",
+       y = "Density")
+
+# Boxplots
+ggplot(numeric_data_long, aes(y = value)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Boxplots of Asteroid Features",
+       x = "Feature",
+       y = "Value")
+
+
+# Clean data and perform random undersampling
+set.seed(123)
+
+# Clean the data
+
+# Check the balance of 'pha' 
+pha_balance <- table(clean_asteroids$pha) 
+print(pha_balance)
+
+# Separate classes
+hazardous <- clean_asteroids %>% filter(pha == "Y")
+non_hazardous <- clean_asteroids %>% filter(pha == "N")
+
+# Randomly sample from majority class to match minority class size exactly
+non_hazardous_sampled <- non_hazardous %>% 
+  sample_n(size = nrow(hazardous))
+
+# Combine to create balanced dataset
+balanced_data <- rbind(hazardous, non_hazardous_sampled)
+
+# Verify the balance
+print(table(balanced_data$pha))
+
+full_model <- glm(pha ~ ., data = balanced_data, family = "binomial")
+
+# Perform stepwise regression
+step_model <- stepAIC(full_model, direction = "both", trace = TRUE)
+
+# Print summary of final model
+summary(step_model)
+
+
+# Create a new dataset with only the most significant features
+balanced_data_selected <- balanced_data %>%
+  dplyr::select(pha, H, moid, i)  # Using explicit dplyr::select
+
+
+# Split and train with selected features
+train_index <- createDataPartition(balanced_data_selected$pha, p = 0.7, list = FALSE)
+train_data_selected <- balanced_data_selected[train_index, ]
+test_data_selected <- balanced_data_selected[-train_index, ]
+
+# Train Random Forest with selected features
+rf_model_selected <- randomForest(pha ~ .,
+                                  data = train_data_selected,
+                                  ntree = 500,
+                                  importance = TRUE)
+
+# Evaluate
+predictions_selected <- predict(rf_model_selected, test_data_selected)
+conf_matrix_selected <- confusionMatrix(predictions_selected, test_data_selected$pha)
+print(conf_matrix_selected)
+
+# Train logistic regression model with selected features
+logistic_model <- glm(pha ~ ., 
+                      data = train_data_selected, 
+                      family = "binomial")
+
+# Print model summary
+summary(logistic_model)
+
+# Make predictions on test set
+predictions_prob <- predict(logistic_model, test_data_selected, type = "response")
+predictions_lr <- ifelse(predictions_prob > 0.5, "Y", "N")
+predictions_lr <- factor(predictions_lr, levels = levels(test_data_selected$pha))  # Fixed: use predictions_lr
+
+# Calculate confusion matrix and model performance metrics
+conf_matrix_lr <- confusionMatrix(predictions_lr, test_data_selected$pha)  # Fixed: use predictions_lr
+print(conf_matrix_lr)
+
